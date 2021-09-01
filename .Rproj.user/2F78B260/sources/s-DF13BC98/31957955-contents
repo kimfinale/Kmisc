@@ -1,0 +1,494 @@
+---
+title: "Kim Miscellaneous"
+author: "Jong-Hoon Kim"
+date: "3/20/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+devtools::document()
+```
+
+
+###  Ordinary differential equation-based SEIR model
+
+![](figs/seir.png){width=60%}
+
+$$
+\begin{aligned}
+\frac{dS}{dt} &= - \beta S\frac{I}{N}\\ 
+\frac{dE}{dt} &= \beta S\frac{I}{N} - \sigma E\\ 
+\frac{dI}{dt} &= \sigma E - \gamma I\\ 
+\frac{dR}{dt} &= \gamma I
+\end{aligned}
+$$
+## Parameters
+- Unit time = day
+- $\beta$ = Transmission rate per unit time
+- $1/\sigma$ = mean incubation period
+- $\gamma$ = transition rate from $E$ to $I$ 
+
+```{r echo=F}
+devtools::load_all()
+y0 <- c(S = 1e7-10, I = 10, R = 0, CI = 10) # initial values
+params <- c(beta = 0.3, gamma = 0.2) # parameter values
+times <- seq(0, 50, by = 1) # daily output for 150 days
+```
+
+```{r, echo=FALSE, message=FALSE }
+library(deSolve)
+library(tidyverse)
+ode(y = y0, times = times, func = ode_sir, parms = params) %>% 
+  as.data.frame() -> out 
+```
+
+```{r echo=FALSE}
+out_long <- out %>% pivot_longer(- time) 
+out_long$name <- factor(out_long$name, levels = c("S", "I", "R", "CI"))
+out_long %>% 
+  filter(name != "CE") %>%
+  ggplot(aes(x = time, y = value, color = name))+
+  geom_line(size = 1.2)+
+  labs(x = 'Time (day)', y = 'Number of individuals', color = "")+ 
+  theme_grey(base_size = 16)
+
+daily_onset <- round(c(0, diff(out$CI)))
+dput(daily_onset)
+```
+
+```{r echo=F}
+y0 <- c(S = 1e3-10, E = 0, I = 10, R = 0, CE = 0, CI = 10) # initial values
+params <- c(beta = 2.5/4, sigma = 1/4, gamma = 1/4) # parameter values
+times <- seq(0, 150, by = 1) # daily output for 150 days
+```
+
+```{r, echo=FALSE, message=FALSE }
+library(deSolve)
+library(tidyverse)
+ode(y = y0, times = times, func = ode_seir, parms = params) %>% 
+  as.data.frame() -> out 
+```
+
+```{r echo=FALSE}
+out_long <- out %>% pivot_longer(- time) 
+out_long$name <- factor(out_long$name, levels = c("S", "E", "I", "R", "CE", "CI"))
+out_long %>% 
+  filter(name != "CE") %>%
+  ggplot(aes(x = time, y = value, color = name))+
+  geom_line(size = 1.2)+
+  labs(x = 'Time (day)', y = 'Number of individuals', color = "")+ 
+  theme_grey(base_size = 16)
+```
+
+
+### Stochastic model - tauleap
+
+$$
+\begin{align}
+\Delta N_{SE} &= \textrm{Binomial}\left( S(t), 1-\textrm{exp}\{-\mu_{SE}\delta \}\right) \\
+\Delta N_{EI} &= \textrm{Binomial}\left( E(t), 1-\textrm{exp}\{-\mu_{EI} \delta \}\right) \\
+\Delta N_{IR} &= \textrm{Binomial}\left( I(t), 1-\textrm{exp}\{-\mu_{IR} \delta\}\right) \\
+\end{align}
+$$
+$$\begin{align} 
+S(t+\delta) &= S(t) - \Delta N_{SE}\\
+E(t+\delta) &= E(t) + \Delta N_{SE} - \Delta N_{EI}\\
+I(t+\delta) &= I(t) + \Delta N_{EI} - \Delta N_{IR}\\
+R(t+\delta) &= R(t) + \Delta N_{IR}\\
+\end{align}
+$$
+#### Run the tauleap model
+```{r echo=FALSE, results=FALSE}
+nrun <- 100 # number of runs
+delta <- 0.1 # 0.1 day
+# times <- seq(1, 4)
+d <- matrix(NA, nrow = length(times), ncol = nrun)
+for (i in 1:nrun) {
+  x <- stoch_solve(func = stoch_seir, y = y0, times = times, params = params, delta = delta)
+  d[, i]  <- x[,"I"]
+}
+# d
+dmean <- rowMeans(d)
+q <- apply(d, 1, quantile, probs = c(0.025, 0.25, 0.5, 0.75, 0.975))
+nc <- ncol(q)
+q[,(nc-5):nc]
+```
+
+#### compare the results between ODE and tauleap model by plotting
+```{r echo=FALSE}
+out %>%
+  gather(state, value, -time) %>%
+  filter(state == "I") -> d1
+names(d1) <- c("time", "state", "value")
+d1$state <- "ODE"
+
+dd <- cbind(time = d1$time, as.data.frame(d) )
+dd %>% as.data.frame() %>% 
+  gather(state, value, -time) -> d2
+
+dmean <- data.frame(time = d1$time, value = dmean)
+dmed <- data.frame(time = d1$time, value = q[3,])
+
+ggplot()+
+  geom_line(data=d2, aes(x=time, y=value, group=state), color="grey50", alpha=0.2)+
+  geom_line(data=d1, aes(x=time, y=value), color="darkred", size=2, inherit.aes=FALSE)+
+  geom_line(data=dmean, aes(x=time, y=value), color="steelblue", size=2, inherit.aes=FALSE)+
+  geom_segment(aes(x=rep(95,3), xend=rep(100,3), y=c(150,140,130), yend=c(150,140,130)), 
+               color = c("darkred","steelblue","grey"), size=1.2) +
+  annotate("text", x=rep(102,3), y=c(150,140,130), 
+           label = c("ODE", "Mean of 1000 runs", "Individual runs"), hjust = 0) +
+  labs(x='time (day)', y='number of infected individuals (I)') +
+  theme_grey(base_size = 16) 
+```
+
+## Stochastic model - Gillespie's algorithm
+### SEPAIR model 
+#### Initial conditions
+
+```{r}
+# devtools::install()
+devtools::load_all()
+R0 <- 1.2
+params <- c(beta = R0/5, epsilon = 1/2.5, delta = 1/5, 
+            gamma = 1/2.5, rho_p = 1, 
+            rho_a = 1, frac_a = 0.3, frac_detect = 1)
+y0 <- c(S = 1e7, E = 0, P = 0, A = 0, I = 10, R = 0, CE = 0, CI = 10)
+tend <- 175
+```
+
+#### Run the ODE version of SEPAIR model
+```{r}
+times <- seq(0, tend, by = 1) # daily output for 150 days
+library(deSolve)
+library(tidyverse)
+ode(y = y0, times = times, func = ode_sepair, parms = params) %>% 
+  as.data.frame() -> out 
+
+out$daily_infected <- c(0, diff(out$CE)) 
+out$daily_symptom_onset <- c(0, diff(out$CI)) 
+out$daily_confirmed <- c(0, diff(out$R))
+
+tstamp <- format(Sys.time(), "%Y%m%dT%H%M%S")
+daily_ode <- list()
+daily_ode$daily_infected <- c(0, diff(out$CE)) 
+daily_ode$daily_symptom_onset <- c(0, diff(out$CI)) 
+daily_ode$daily_confirmed <- c(0, diff(out$R))
+# saveRDS(daily_ode, paste0("outputs/daily_ode_", tstamp, ".rds"))
+
+Rt <- rep(NA, length(times))
+for (i in seq_along(times)){
+  Rt[i] <- get_Rt(times[i])  
+}
+out <- cbind(out, Rt)
+
+out_long <- out %>% pivot_longer(-time) 
+out_long$name <- factor(out_long$name,
+                        levels = c("S", "E", "P", "A", "I", "R", 
+                                  "CE", "CI", "daily_infected", 
+                                  "daily_symptom_onset", "daily_confirmed", "Rt"))
+out_long %>% 
+  filter(name == "daily_infected" | 
+           name == "daily_symptom_onset" | name == "daily_confirmed") %>%
+  ggplot(aes(x = time, y = value, color = name)) +
+  geom_line(size = 1.2) +
+  labs(x='Time (day)', y = 'Number of individuals', color = "") + 
+  theme_grey(base_size = 16) 
+  # facet_wrap(vars(name), nrow = 2, scales = "free_y")
+
+```
+
+## run model implemented in Gillespie's direct method
+```{r}
+set.seed(1)
+tstart <- Sys.time()
+nrun <- 100
+res <- gillespie_run(func = gillespie_sepair, 
+                     tend = tend, 
+                     nrun = nrun, 
+                     y0 = y0, 
+                     params = params, 
+                     report_dt = 1)
+Sys.time() - tstart
+
+daily_inf <- data.frame(matrix(0, nrow = tend + 1, ncol = nrun))
+daily_ons <- data.frame(matrix(0, nrow = tend + 1, ncol = nrun))
+daily_con <- data.frame(matrix(0, nrow = tend + 1, ncol = nrun))
+
+for (i in seq_len(length(res))) {
+  inf <- diff(res[[i]]$CE)
+  onset <- diff(res[[i]]$CI)
+  conf <- diff(res[[i]]$R)
+  daily_inf[1:(length(inf)+1), i] <- c(0, inf)
+  daily_ons[1:(length(onset)+1), i] <- c(0, onset)
+  daily_con[1:(length(conf)+1), i] <- c(0, conf)
+}
+
+df <- daily_inf
+df$time <- 0:tend
+df %>% pivot_longer(cols = -time) -> df
+
+ggplot() +
+  geom_line(data = df, aes(time, value, group = name), 
+            color = "grey50") +
+  geom_line(data = out, mapping = aes(time, daily_infected), color = "darkred",
+            size = 2, inherit.aes = FALSE)
+
+daily_stoch <- list()
+daily_stoch$confirmed <- daily_con
+daily_stoch$onset <- daily_ons
+daily_stoch$infected <- daily_inf
+
+# saveRDS(daily_stoch, paste0("outputs/daily_stoch_", tstamp, ".rds"))
+```
+
+### Apply a detection rate
+```{r}
+rr <- nrow(daily_stoch$confirmed)
+cc <- ncol(daily_stoch$confirmed)
+detected <- data.frame(matrix(0, nrow = rr, ncol = cc))
+daily_stoch_partial_obs <- list()
+probs <- seq(0.2,0.8,0.1)
+daily_stoch_partial_obs$probs <- probs
+set.seed(30)
+for (k in 1:length(probs)) {
+  prob <- probs[k]
+  for (i in 1:rr) {
+     for (j in 1:cc){
+       size <- daily_stoch$confirmed[i, j]
+       # message(paste0("i = ", i, ", j = ", j, ", case = ", size, "\n"))
+       if (!is.na(size) & size > 0){
+         detected[i, j] <- rbinom(1, size = size, prob = prob)
+       }
+    }
+  }
+  daily_stoch_partial_obs$detected[[k]] <- detected
+}
+
+# saveRDS(daily_stoch_partial_obs, paste0("outputs/daily_stoch_partial_obs_", tstamp, ".rds"))
+```
+## total dataset
+```{r}
+Rt_dataset <- list()
+Rt_dataset$ode <- daily_ode
+Rt_dataset$stoch_perfect_obs <- daily_stoch
+Rt_dataset$stoch_partial_obs <- daily_stoch_partial_obs
+# saveRDS(Rt_dataset, paste0("outputs/Rt_dataset_", tstamp, ".rds"))
+
+Rt_dataset$stoch_perfect_obs$confirmed$X1[1:20]
+Rt_dataset$stoch_partial_obs$detected[[7]]$X1[1:20]
+
+library(ggplot2)
+
+ggplot() +
+  geom_line(aes(x=1:101, y = Rt_dataset$ode_perfect_obs$daily_infected)) + 
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_perfect_obs$infected$X1), color = "blue", size = 1, alpha = 0.3)+ 
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_perfect_obs$infected$X3),  color = "blue", size = 1, alpha = 0.6)+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X1), color = "darkred", size = 1, alpha = 0.3)+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X3), color = "darkred", size = 1, alpha = 0.6)+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X1), color = "darkred")+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X3), color = "darkred")+
+  labs(x = "day", y = "daily infection")
+
+plot(Rt_dataset$stoch_perfect_obs$confirmed[,1], type = "l", col = rgb(0.6,0.6,0.6, alpha=0.8), ylim=c(0,100))
+for (i in 2:100){
+  lines(Rt_dataset$stoch_perfect_obs$confirmed[,i], col = rgb(0.6,0.6,0.6, alpha=0.8))
+}
+lines(Rt_dataset$ode_perfect_obs$daily_confirmed, lwd=2)
+# row_mean <- rowMeans(Rt_dataset$stoch_perfect_obs$confirmed, na.rm=TRUE)
+# for (i in 1:nrow(daily_case_list$confirmed)){
+#   daily_case_list$confirmed[i, is.na(daily_case_list$confirmed[i, ])] <- 0 
+# }
+row_mean <- rowMeans(daily_case_list$confirmed, na.rm=TRUE)
+lines(row_mean, lwd=2, col=2)
+```
+
+
+```{r eval = F}
+# tstamp <- format(Sys.time(), "%Y%m%dT%H%M%S")
+# sim_res <- list(daily_infected = daily_inf, 
+#                 daily_symptom_onset = daily_ons,
+#                 daily_confirmed = daily_con,
+#                 ODE = out)
+# saveRDS(sim_res, paste0("outputs/sim", tstamp, ".rds"))
+# library(tidyverse)
+# library(data.table)
+# extract_daily_output <- function(df){
+#   tend <- max(df$time) + 1
+#   rowids <- sapply(1:tend, function(x) length(df$time[(x - df$time) > 0]))
+#   return (df[c(1, rowids),]) # first row is the initial condition and included
+# }
+# df <- extract_daily_output(res[[1]])
+# df %>% ggplot(aes(ceiling(time), I)) + geom_point() + geom_line()
+```
+
+
+### Random-walk Metropolis-Hastings MCMC 
+```{r}
+# data <- rgamma(50, shape = 2.4, rate = 0.4) + rnorm(50, mean = 0, sd = 0.1)
+set.seed(1510)
+data <- rgamma(10000, shape = 2.4, rate = 0.4)
+lb <- c(1e-6, 1e-6)
+ub <- c(1e3, 1e3)
+# Prior distribution
+log_prior <- function (params = NULL, lower = NULL, upper = NULL){
+  if (!(length(params) == length(lower) & length(params) == length(lower))){
+    stop("The number of elements must be the same for params, lower, and upper")
+  }
+  shape <- params[1]
+  rate <- params[2]
+  shape_prior = dunif(shape, lower[1], upper[1], log = T)
+  rate_prior = dunif(rate, lower[2], upper[2], log = T)
+  return(shape_prior + rate_prior)
+}
+
+log_lik <- function(params, data){
+  if(length(params) != 2) {
+    stop("Two elements are required for the param!")
+  }
+  return(sum(dgamma(data, shape = params[1], rate = params[2], log = TRUE)))
+}
+
+log_posterior <- function (params, data, lower, upper){
+    return (log_lik(params, data))
+}
+# log_prior(params = c(2,3), lower = lb, upper = ub)
+# log_posterior(params = c(2,3), data = data, lower = lb, upper = ub)
+
+library(tmvtnorm)
+run_mcmc <- function(data, 
+                     startvalue,
+                     iter, 
+                     burnin = round(iter/2), 
+                     sigma, 
+                     lower,
+                     upper,
+                     show_progress_bar = TRUE){
+  if (show_progress_bar) {
+    pb <- txtProgressBar(min = 0, max = iter, style = 3)
+  }
+  update_step <- max(5, floor(iter/100))
+  
+  accept <- numeric(iter)
+  npar <- length(startvalue)
+  chain <- matrix(NA, nrow = iter, ncol = (npar+1)) # unknown parameters + likelihood store
+  chain[1, 1:npar] <-  startvalue
+  chain[1, (npar+1)] <- log_posterior(chain[1, 1:npar], data, lower, upper)
+  
+  for (i in 2:iter) {
+    # proposal function
+    if (show_progress_bar && i%%update_step == 0) {
+      setTxtProgressBar(pb, i)
+    }
+    # random walk
+    proposal <- rmvnorm(1, mean = chain[(i-1), 1:npar], sigma = sigma)
+    posterior_proposal <- -Inf
+    if ((proposal[1] > 0) & (proposal[2] > 0)) {
+      posterior_proposal <- log_posterior(proposal, data, lower, upper)
+    }
+    # cat( proposal, "\n" )
+    # # acceptance probability
+    alpha <- exp(posterior_proposal - chain[(i-1), (npar+1)])
+    # cat( "\niter = ", i, ", log density = ", posterior_proposal, ", log density prev = ", chain[ (i-1), (npar+1) ], ", alpha = ", alpha )
+    if (!is.finite(alpha)){ 
+      alpha <- 0
+    }
+    if (runif(1) < alpha){
+      chain[i, 1:npar] <- proposal
+      chain[i, (npar+1)] <- posterior_proposal
+      accept[i] <- 1
+      # cat( "\niter = ", i, ", proposal accepted:", chain[ i,],"\n")
+    } else { 
+      chain[i, 1:npar ] <- chain[(i-1), 1:npar]
+      chain[i, (npar+1)] <- chain[(i-1), (npar+1)]
+    } 
+  } 
+  # cat( "\nAcceptance ratio = ", sum(accept[(burnin + 1):iter]) / (iter - burnin), "\n" )
+  list(theta = chain[(burnin + 1):iter, (1:npar)],
+       log_posterior = chain[(burnin + 1):iter, (npar+1)], 
+       acceptance_ratio = sum(accept[(burnin + 1):iter]) / (iter - burnin))
+}
+
+run_mcmc2 <- function(data, 
+                     startvalue,
+                     iter, 
+                     burnin = round(iter/2), 
+                     sigma, 
+                     lower,
+                     upper,
+                     show_progress_bar = TRUE){
+  if (show_progress_bar) {
+    pb <- txtProgressBar(min = 0, max = iter, style = 3)
+  }
+  update_step <- max(5, floor(iter/100))
+  
+  accept <- numeric(iter)
+  npar <- length(startvalue)
+  chain <- matrix(NA, nrow = iter, ncol = (npar+1)) # unknown parameters + likelihood store
+  chain[1, 1:npar] <-  startvalue
+  chain[1, (npar+1)] <- log_posterior(chain[1, 1:npar], data, lower, upper)
+  
+  for (i in 2:iter) {
+    # proposal function
+    if (show_progress_bar && i%%update_step == 0) {
+      setTxtProgressBar(pb, i)
+    }
+    # random walk
+
+    proposal <- rtmvnorm(1, mean = chain[(i-1), 1:npar], sigma = sigma,
+                         lower = lower, upper = upper)
+    # proposal <- rmvnorm(1, mean = chain[(i-1), 1:npar], sigma = sigma)
+    posterior_proposal <- -Inf
+    if ((proposal[1] > 0) & (proposal[2] > 0)) {
+      posterior_proposal <- log_posterior(proposal, data, lower, upper)
+    }
+    # cat( proposal, "\n" )
+    # # acceptance probability
+    alpha <- exp(posterior_proposal - chain[(i-1), (npar+1)])
+    # acceptbance probability
+    old <- chain[(i-1), 1:npar]
+    prob_new_given_old <-
+      dtmvnorm(proposal, mean = old, sigma = sigma, lower = lower, upper = upper)
+    prob_old_given_new <-
+      dtmvnorm(old, mean = as.vector(proposal), sigma = sigma, lower = lower, upper = upper)
+    alpha <- exp(posterior_proposal - chain[(i-1), (npar+1)]) * prob_old_given_new / prob_new_given_old
+    # cat( "\niter = ", i, ", log density = ", posterior_proposal, ", log density prev = ", chain[ (i-1), (npar+1) ], ", alpha = ", alpha )
+    if (!is.finite(alpha)){ 
+      alpha <- 0
+    }
+    if (runif(1) < alpha){
+      chain[i, 1:npar] <- proposal
+      chain[i, (npar+1)] <- posterior_proposal
+      accept[i] <- 1
+      # cat( "\niter = ", i, ", proposal accepted:", chain[ i,],"\n")
+    } else { 
+      chain[i, 1:npar ] <- chain[(i-1), 1:npar]
+      chain[i, (npar+1)] <- chain[(i-1), (npar+1)]
+    } 
+  } 
+  # cat( "\nAcceptance ratio = ", sum(accept[(burnin + 1):iter]) / (iter - burnin), "\n" )
+  list(theta = chain[(burnin + 1):iter, (1:npar)],
+       log_posterior = chain[(burnin + 1):iter, (npar+1)], 
+       acceptance_ratio = sum(accept[(burnin + 1):iter]) / (iter - burnin))
+}
+
+
+mcmc <- run_mcmc(data = data, 
+                     startvalue = c(1, 1),
+                     iter =  5e5, 
+                     burnin = round(iter/2), 
+                     sigma = diag(length(lb)), 
+                     lower = lb,
+                     upper = ub,
+                     show_progress_bar = TRUE)
+
+quantile(mcmc$theta[,1])
+quantile(mcmc$theta[,2])
+plot(mcmc$theta[,1], type = "l")
+
+```
+
+
+
+

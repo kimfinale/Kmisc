@@ -1,0 +1,388 @@
+---
+title: "Rt"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+## Stochastic model - Gillespie's algorithm
+### SEPAIR model 
+#### Initial conditions
+
+```{r}
+# devtools::install()
+devtools::load_all()
+R0 <- 1.2
+params <- c(beta = R0/5, epsilon = 1/2.5, delta = 1/5, 
+            gamma = 1/2.5, rho_p = 1, 
+            rho_a = 1, frac_a = 0.3, frac_detect = 1)
+y0 <- c(S = 1e7, E = 0, P = 0, A = 0, I = 10, R = 0, CE = 0, CI = 10)
+tend <- 200
+
+# library(rootSolve)
+# fun <- function (x) 0.5*sin(0.1*pi*x)+ 1.2 - 0.9
+# curve(fun(x), 0, 40)
+# abline(h = 0, lty = 3)
+# uni <- uniroot(fun, c(30, 35))$root
+# points(uni, 0, pch = 16, cex = 2)
+```
+
+#### Run the ODE version of SEPAIR model
+```{r}
+tstamp <- format(Sys.time(), "%Y%m%dT%H%M%S")
+times <- seq(0, tend, by = 1) # daily output for 150 days
+library(deSolve)
+library(tidyverse)
+ode(y = y0, times = times, func = ode_sepair, parms = params) %>% 
+  as.data.frame() -> out 
+
+out$daily_infected <- c(0, diff(out$CE)) 
+out$daily_symptom_onset <- c(0, diff(out$CI)) 
+out$daily_confirmed <- c(0, diff(out$R))
+out$Rt <- sapply(0:tend, function(x) get_Rt(x))
+
+# saveRDS(out, paste0("outputs/daily_ode_", tstamp, ".rds"))
+
+# daily_ode <- list()
+# daily_ode$time <- out$time
+# daily_ode$Rt <- sapply(0:tend, function(x) get_Rt(x))
+# daily_ode$daily_infected <- c(0, diff(out$CE))
+# daily_ode$daily_symptom_onset <- c(0, diff(out$CI))
+# daily_ode$daily_confirmed <- c(0, diff(out$R))
+# 
+# saveRDS(daily_ode, paste0("outputs/daily_ode_", tstamp, ".rds"))
+
+out_long <- out %>% pivot_longer(-time) 
+out_long$name <- factor(out_long$name,
+                        levels = c("S", "E", "P", "A", "I", "R", 
+                                  "CE", "CI", "daily_infected", 
+                                  "daily_symptom_onset", "daily_confirmed", "Rt"))
+out_long %>%
+  filter(name == "daily_infected" | 
+           name == "daily_symptom_onset" | name == "daily_confirmed") %>%
+  ggplot(aes(x = time, y = value, color = name)) +
+  geom_line(size = 1.2) +
+  labs(x='Time (day)', y = 'Number of individuals', color = "") + 
+  theme_grey(base_size = 16) 
+  # facet_wrap(vars(name), nrow = 2, scales = "free_y")
+
+```
+
+## run model implemented in Gillespie's direct method
+```{r}
+set.seed(1)
+tstart <- Sys.time()
+nrun <- 100
+res <- gillespie_run(func = gillespie_sepair, 
+                     tend = tend, 
+                     nrun = nrun, 
+                     y0 = y0, 
+                     params = params, 
+                     report_dt = 1)
+Sys.time() - tstart
+
+daily_inf <- data.frame(matrix(0, nrow = tend + 1, ncol = nrun))
+daily_ons <- data.frame(matrix(0, nrow = tend + 1, ncol = nrun))
+daily_con <- data.frame(matrix(0, nrow = tend + 1, ncol = nrun))
+
+for (i in seq_len(length(res))) {
+  inf <- diff(res[[i]]$CE)
+  onset <- diff(res[[i]]$CI)
+  conf <- diff(res[[i]]$R)
+  daily_inf[1:(length(inf)+1), i] <- c(0, inf)
+  daily_ons[1:(length(onset)+1), i] <- c(0, onset)
+  daily_con[1:(length(conf)+1), i] <- c(0, conf)
+}
+
+df <- daily_inf
+df$time <- 0:tend
+df %>% pivot_longer(cols = -time) -> df
+
+ggplot() +
+  geom_line(data = df, aes(time, value, group = name), 
+            color = "grey50") +
+  geom_line(data = out, mapping = aes(time, daily_infected), color = "darkred",
+            size = 2, inherit.aes = FALSE)
+
+daily_stoch <- list()
+daily_stoch$confirmed <- daily_con
+daily_stoch$onset <- daily_ons
+daily_stoch$infected <- daily_inf
+
+# saveRDS(daily_stoch, paste0("outputs/daily_stoch_", tstamp, ".rds"))
+```
+
+### Apply a detection rate
+```{r}
+rr <- nrow(daily_stoch$confirmed)
+cc <- ncol(daily_stoch$confirmed)
+detected <- data.frame(matrix(0, nrow = rr, ncol = cc))
+daily_stoch_partial_obs <- list()
+probs <- seq(0.2,0.8,0.1)
+daily_stoch_partial_obs$probs <- probs
+set.seed(30)
+for (k in 1:length(probs)) {
+  prob <- probs[k]
+  for (i in 1:rr) {
+     for (j in 1:cc){
+       size <- daily_stoch$confirmed[i, j]
+       # message(paste0("i = ", i, ", j = ", j, ", case = ", size, "\n"))
+       if (!is.na(size) & size > 0){
+         detected[i, j] <- rbinom(1, size = size, prob = prob)
+       }
+    }
+  }
+  daily_stoch_partial_obs$detected[[k]] <- detected
+}
+
+# saveRDS(daily_stoch_partial_obs, paste0("outputs/daily_stoch_partial_obs_", tstamp, ".rds"))
+```
+
+## total dataset
+```{r}
+Rt_dataset <- list()
+Rt_dataset$ode <- out
+Rt_dataset$stoch_perfect_obs <- daily_stoch
+Rt_dataset$stoch_partial_obs <- daily_stoch_partial_obs
+Rt_dataset$Rt <- sapply(0:tend, function(x) get_Rt(x))
+Rt_dataset$time <- out$time
+Rt_dataset$params <- params
+Rt_dataset$y0 <- y0
+# saveRDS(Rt_dataset, paste0("outputs/Rt_dataset_", tstamp, ".rds"))
+```
+
+```{r}
+Rt_dataset$stoch_perfect_obs$confirmed$X1[1:20]
+Rt_dataset$stoch_partial_obs$detected[[7]]$X1[1:20]
+
+library(ggplot2)
+
+ggplot() +
+  geom_line(aes(x=1:101, y = Rt_dataset$ode_perfect_obs$daily_infected)) + 
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_perfect_obs$infected$X1), color = "blue", size = 1, alpha = 0.3)+ 
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_perfect_obs$infected$X3),  color = "blue", size = 1, alpha = 0.6)+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X1), color = "darkred", size = 1, alpha = 0.3)+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X3), color = "darkred", size = 1, alpha = 0.6)+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X1), color = "darkred")+
+  geom_line(aes(x=1:101, y = Rt_dataset$stoch_partial_obs$detected[[7]]$X3), color = "darkred")+
+  labs(x = "day", y = "daily infection")
+
+plot(Rt_dataset$stoch_perfect_obs$confirmed[,1], type = "l", col = rgb(0.6,0.6,0.6, alpha=0.8), ylim=c(0,100))
+for (i in 2:100){
+  lines(Rt_dataset$stoch_perfect_obs$confirmed[,i], col = rgb(0.6,0.6,0.6, alpha=0.8))
+}
+lines(Rt_dataset$ode_perfect_obs$daily_confirmed, lwd=2)
+# row_mean <- rowMeans(Rt_dataset$stoch_perfect_obs$confirmed, na.rm=TRUE)
+# for (i in 1:nrow(daily_case_list$confirmed)){
+#   daily_case_list$confirmed[i, is.na(daily_case_list$confirmed[i, ])] <- 0 
+# }
+row_mean <- rowMeans(daily_case_list$confirmed, na.rm=TRUE)
+lines(row_mean, lwd=2, col=2)
+```
+
+
+## Particle filtering
+```{r}
+library(Kmisc)
+Rt <- sapply(1:101, function(x) get_Rt(x))
+
+dat <- readRDS("outputs/Rt_data_set.rds")
+library(pfilter)
+params <- c(epsilon = 1/2.5, delta = 1/5, 
+            gamma = 1/2.5, rho_p = 1, 
+            rho_a = 1, frac_a = 0.3, frac_detect = 1)
+
+## particle filter function has S, E, P, A, I, R, CE, CI, CR variables!!
+y0 <- c(S = 1e7, E = 0, P = 0, A = 0, I = 10, R = 0, CE = 0, CI = 10, CR = 0)
+tend <- 175
+parnames <- c("epsilon", "delta", "gamma", "rho_p", "rho_a", "frac_a")
+for (pn in parnames){
+  theta[[pn]] <- params[[pn]]
+}
+usethis::use_data(theta, overwrite = T)
+
+theta["betavol"] <- 0.4
+devtools::load_all(".")
+
+# d <- data.frame(date = 1:101, daily_confirmed = round(dat$ode_perfect_obs$daily_confirmed))
+# d <- data.frame(date = 1:101, daily_infected = round(dat$ode_perfect_obs$daily_infected))
+d <- out[1:175, c("time", "daily_infected")]
+names(d) <- c("date", "daily_infected")  
+
+pf <- particle_filter(
+  params = theta,
+  y = y0,
+  beta0 = 0.24,
+  data = d,
+  data_type = "infection",
+  npart = 10000,
+  tend = nrow(d),
+  dt = 0.1,
+  error_pdf = "pois",
+  systematic_resampling = FALSE,
+  filter_traj = TRUE, 
+  stoch = FALSE)
+
+# Rt <- readRDS("outputs/Rt_default.rds")
+plot(out$Rt, type="l")
+med <- apply(pf$beta_filtered, 1, quantile, probs = c(0.5))
+lower <- apply(pf$beta_filtered, 1, quantile, probs = c(0.025))
+upper <- apply(pf$beta_filtered, 1, quantile, probs = c(0.975))
+lines(med*5, lwd=2, col=3)
+lines(upper*5, lty=2, lwd=2, col=3)
+lines(lower*5, lty=2, lwd=2, col=3)
+```
+
+### Fit
+```{r}
+## forward filtering with backward sampling
+# d <- out[1:175, c("time", "daily_confirmed")]
+# names(d) <- c("date", "daily_confirmed")
+
+# dat <- readRDS("outputs/Rt_dataset_20210831T120235.rds")
+# dat <- readRDS("outputs/Rt_dataset_20210831T142547.rds")
+# dat <- readRDS("outputs/Rt_dataset_20210831T150053.rds")
+# dat <- readRDS("outputs/Rt_dataset_20210831T155155.rds")
+tstamp <- "20210831T201644"
+dat <- readRDS(paste0("outputs/Rt_dataset_", tstamp, ".rds"))
+library(Kmisc)
+library(pfilter)
+# devtools::install()
+theta["betavol"] <- 0.28
+library(ggplot2)
+theme_set(theme_bw())
+library(parallel)
+library(doParallel)
+library(foreach)
+set.seed(1)
+
+for(id in 1:10){
+d <- data.frame(date = dat$time, 
+                daily_confirmed = round(dat$stoch_perfect_obs$confirmed[, id]))
+
+ncores <- detectCores()
+cl <- makeCluster(getOption("cl.cores", ncores - 2))
+doParallel::registerDoParallel(cl)
+
+pf <- foreach(i = 1:1e3, .packages = c("pfilter"), .inorder = F) %dopar% {
+  extract_trace(params = theta,
+                y = y0,
+                data = d,
+                data_type = "confirmation",
+                npart = 1e4,
+                tend = nrow(d),
+                dt = 0.2,
+                error_pdf = "pois",
+                negbin_size = 15,
+                stoch = FALSE)
+}
+parallel::stopCluster(cl)
+
+pr <- c(0.025, 0.25, 0.5, 0.75, 0.975)
+Rt_est <- as.data.frame(sapply(pf, function(x) x[, "Rt"]))
+Rt_quantile <- as.data.frame(t(apply(Rt_est, 1, function(x) quantile(x, pr))))
+
+df <- cbind(Rt_quantile, d)
+col_fill <- "#1F618D"
+col_dat <- "grey70"
+df$Rt <- dat$Rt
+plt1 <- ggplot(df, aes(x = date)) +
+  geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), fill = col_fill, alpha = 0.5) +
+  geom_ribbon(aes(ymin = `25%`, ymax = `75%`), fill = col_fill, alpha = 0.8) +
+  geom_line(aes(y = `50%`), color = col_fill, size = 1.2) +
+  geom_line(aes(y = Rt), size = 1, linetype = "dashed") +
+  geom_hline(yintercept = 1, color = "darkred", size = 1, linetype = "dotted")+
+  labs(title = paste0("ID = ", id, ", dt = 0.1"), y = expression(italic(R)[italic(t)]), x = "")
+  # 
+  # labs(title = paste0("ID = ", id, ", Prob = 0.8"), y = expression(italic(R)[italic(t)]), x = "")
+  
+  # labs(title = expression(italic(R)[italic(t)]~estimated~using~particle~filtering),
+  #        y = expression(italic(R)[italic(t)]), x = "") 
+
+# ggsave(paste0("plots/pf_stoch_confirmed_Rt_", id, ".png"), plt)
+
+daily_conf <- as.data.frame(sapply(pf, function(x) x[, "CR"]))
+daily_conf_quantile <- 
+  as.data.frame(t(apply(daily_conf, 1, function(x) quantile(x, pr))))
+df <- cbind(daily_conf_quantile, d)
+df$ode_traj <- dat$ode$daily_confirmed
+# df$ode_traj <- dat$ode$daily_infected
+plt2 <- ggplot(df, aes(x = date)) +
+  geom_col(aes(y = daily_confirmed), color = col_dat, width = 0.8) +
+  geom_ribbon(aes(ymin = `2.5%`, ymax = `97.5%`), fill = col_fill, alpha = 0.4) +
+  geom_ribbon(aes(ymin = `25%`, ymax = `75%`), fill = col_fill, alpha = 0.6) +
+  geom_line(aes(y = `50%`), color = col_fill, size = 1.2) +
+  geom_line(aes(y = ode_traj), size = 1, linetype = "dashed")+
+  labs(x = "", y = "Daily confirmed case") 
+  
+# ggsave(paste0("plots/pf_stoch_confirmed_case_", id, ".png"), plt)
+
+gA <- ggplotGrob(plt1)
+gB <- ggplotGrob(plt2)
+png(paste0("plots/pf_stoch_confirm_id_", id, "_", tstamp, ".png"),
+    width = 480*1.4, height = 480*1.4, res = 1.4*72)
+grid::grid.newpage()
+grid::grid.draw(rbind(gA, gB))
+dev.off()
+
+# plts <- gridExtra::grid.arrange(plt1, plt2, nrow = 2)
+# ggsave(paste0("plots/proc_stoch_pf_stoch__", id, ".png"), plts)
+}
+
+
+```
+
+
+
+
+## EpiNow2
+```{r}
+Rt <- readRDS("outputs/Rt_dataset_20210809T215134.rds")
+library(EpiNow2)
+# set number of cores to use
+options(mc.cores = ifelse(interactive(), 4, 1))
+# get example case counts
+reported_cases <- example_confirmed[1:60]
+
+# set up example generation time
+generation_time <- get_generation_time(disease = "SARS-CoV-2", source = "ganyani")
+# set delays between infection and case report 
+incubation_period <- get_incubation_period(disease = "SARS-CoV-2", source = "lauer")
+reporting_delay <- list(mean = convert_to_logmean(3, 1), mean_sd = 0.1,
+                        sd = convert_to_logsd(3, 1), sd_sd = 0.1, max = 10)
+      
+# default setting 
+# here we assume that the observed data is truncated by the same delay as 
+def <- estimate_infections(reported_cases, generation_time = generation_time,
+                           delays = delay_opts(incubation_period, reporting_delay),
+                           rt = rt_opts(prior = list(mean = 2, sd = 0.1)),
+                           stan = stan_opts(control = list(adapt_delta = 0.95)))
+# real time estimates
+summary(def)
+# summary plot
+plot(def)
+```
+
+```{r}
+Rt <- readRDS("outputs/Rt_dataset_20210809T215134.rds")
+reported_cases <- data.frame(date = seq(as.Date("2020-02-22"), length.out = length(Rt$stoch_perfect_obs$confirmed[[1]]), by = "day"), 
+                             confirm =  Rt$stoch_perfect_obs$confirmed[[1]])
+
+# set up example generation time
+generation_time$mean <- 6.5
+# set delays between infection and case report 
+incubation_period$mean <- 5
+reporting_delay$mean <- 2.5
+
+# default setting 
+# here we assume that the observed data is truncated by the same delay as 
+def <- estimate_infections(reported_cases, generation_time = generation_time,
+                           delays = delay_opts(incubation_period, reporting_delay),
+                           rt = rt_opts(prior = list(mean = 2, sd = 0.1)),
+                           stan = stan_opts(control = list(adapt_delta = 0.95)))
+# real time estimates
+summary(def)
+# summary plot
+plot(def)
+```
+

@@ -1,0 +1,733 @@
+---
+title: "pomp package"
+output: html_notebook
+editor_options: 
+  chunk_output_type: console
+---
+
+
+
+## fake data generation
+```{r}
+library(Kmisc)
+library(deSolve)
+library(tidyverse)
+devtools::load_all()
+params <- c(beta = 0.3, gamma = 0.2)
+y0 <- c(S = 9950, I = 50, R = 0, CI = 0)
+tend <- 100
+times <- seq(0, tend, by = 1) # daily output for 150 days
+
+ode(y = y0, times = times, func = ode_sir, parms = params) %>% 
+  as.data.frame() -> out 
+
+out$daily_symptom_onset <- c(0, diff(out$CI))
+set.seed(23)
+# out$obs <- rpois(tend+1, out$daily_symptom_onset)
+out$obs <- round(out$daily_symptom_onset)
+```
+
+## ODE model
+### ODE model compile and run
+```{r}
+library(pomp)
+sir_ode <- "
+  double N = S + I + R;
+  double infection = S*beta*I/N;
+  double recovery = I*gamma;
+  DS = -infection;
+  DI = infection - recovery;
+  DR = recovery;
+  DY = infection; 
+"
+rmeas <-"
+  Z = rpois(Y);
+"
+dmeas <-"
+  lik = dpois(Z, Y, give_log);
+"
+rinit <-"
+  S=9950;
+  I=50;
+  R=0;
+  Y=0;
+"
+
+pomp(data = data.frame(time=seq(0,100,by=1),Z=out[, "obs"]),
+     times = "time",
+     t0 = 0,
+     rmeasure = Csnippet(rmeas),
+     dmeasure = Csnippet(dmeas),
+     skeleton = vectorfield(Csnippet(sir_ode)),
+     statenames = c("S","I","R","Y"),
+     paramnames = c("beta","gamma"),
+     params = c(beta=0.2,gamma=0.1),
+     accumvars = "Y",
+     rinit = Csnippet(rinit)) -> sirodeC 
+
+sirodeC %>%
+  trajectory(params = c(beta=0.3, gamma=0.2),
+             format="data.frame") -> res
+plot(res)
+
+p <- parmat(c(beta=0.3,gamma=0.2),10)
+p["beta",] <- seq(0.1,0.4,length=10)
+sirodeC %>%
+  trajectory(params=p,format="data.frame") %>%
+  ggplot(mapping=aes(x=time,y=I,color=.id,group=.id))+
+  guides(color="none")+
+  geom_line()+
+  theme_bw()
+```
+
+### ODE Parameter estimation -- trajectory matching 
+```{r}
+sirodeC %>%
+  traj_objfun(est = c("beta","gamma"),
+              params = c(beta=0.5,gamma=0.3),
+              dmeasure = Csnippet(dmeas),
+              statenames = c("S","I","R","Y"),
+              paramnames = c("beta","gamma")) -> ofun
+
+
+ofun(c(0.3,0.2))
+library(subplex)
+subplex(c(beta=0.2,gamma=0.15),fn=ofun) -> fit
+fit
+ofun(fit)
+coef(fit)
+logLik(fit)
+
+ofun %>%
+  trajectory(format="data.frame") %>%
+  ggplot(mapping=aes(x=time,y=Y,color=.id,group=.id))+
+  geom_point(data=out, aes(x=time,y=daily_symptom_onset), color="darkred", inherit.aes=F)+
+  guides(color="none")+
+  geom_line()+
+  theme_bw()
+
+sirodeC %>%
+  traj_objfun(
+    est=c("beta","gamma"),
+    params=c(beta=0.5,gamma=0.1),
+    partrans=parameter_trans(log=c("beta","gamma")),
+    dmeasure=Csnippet(dmeas), 
+    statenames=c("S","I","R","Y"), 
+    paramnames=c("beta","gamma")) -> ofun2
+
+subplex(log(c(beta=0.1,gamma=0.2)),fn=ofun2) -> fit
+fit
+ofun2(fit)
+ofun2(fit$par)
+coef(fit$par)
+fit$value
+ofun2(fit$par)
+```
+
+## Stochastic model
+```{r}
+library(pomp)
+sir_step <- "
+  double N = S + I + R;
+  double lambda = beta * I / N;
+  double infection = rbinom(S, 1-exp(-lambda*dt));
+  double recovery = rbinom(I, 1-exp(-gamma*dt));
+  S += -infection;
+  I += infection - recovery;
+  R += recovery;
+  Y += infection; 
+"
+
+rmeas <-"
+  Z = rpois(Y);
+"
+
+dmeas <-"
+  lik = dpois(Z, Y, give_log);
+"
+
+rinit <-"
+  S=9950;
+  I=50;
+  R=0;
+  Y=0;
+"
+
+pomp(data = data.frame(time=seq(0,100,by=1),Z=out[, "obs"]),
+     times = "time",
+     t0 = 0,
+     rmeasure = Csnippet(rmeas),
+     dmeasure = Csnippet(dmeas),
+     rprocess = euler(Csnippet(sir_step), delta.t = 0.2),
+     statenames = c("S","I","R","Y"),
+     paramnames = c("beta","gamma"),
+     accumvars = "Y",
+     rinit = Csnippet(rinit)) -> sir
+
+sir %>%
+  simulate(params=c(beta=0.3,gamma=0.2)) %>%
+  plot()
+
+# # multiple simulation
+# simulate(sir, params=c(beta=0.3,gamma=0.2), nsim = 100) -> sims
+# ggplot(data=gather(as.data.frame(sims), variable, value, Y, Z),
+#        aes(x = time, y = value, color = variable,
+#            group = interaction(.id, variable)))+
+#   geom_line()+
+#   facet_grid(variable~.,scales="free_y")+
+#   labs(y="",color="")
+```
+
+## Parameter estimation using iterated filtering (IF) - local search
+```{r}
+# Local search
+set.seed(234)
+sir %>%
+  mif2(
+    params=c(beta=0.5, gamma=0.5),
+    Np=1000,
+    Nmif=50,
+    partrans=parameter_trans(log=c("beta","gamma")),
+    paramnames=c("beta","gamma"),
+    rw.sd=rw.sd(beta=0.01,gamma=0.01),
+    cooling.fraction.50=0.5) -> mf1
+
+coef(mf1)
+plot(mf1)
+```
+
+# Global search - IF from multiple initial points
+```{r}
+# Global search
+sobol_design(
+  lower = c(beta = 0.01, gamma = 0.01),
+  upper = c(beta = 0.99, gamma = 0.99),
+  nseq = 10
+) -> guesses
+# guesses
+
+library(parallel)
+library(doParallel)
+library(foreach)
+
+ncores <- detectCores()
+cl <- makeCluster(getOption("cl.cores", ncores - 2))
+doParallel::registerDoParallel(cl)
+
+foreach (guess = iter(guesses, "row"),
+         .combine = c,
+         .export = c("guesses"),
+         .packages = c("pomp"),
+         # .errorhandling = "remove",
+         .inorder = FALSE) %dopar% {mf1 %>% mif2(params = guess)} -> mifs
+
+parallel::stopCluster(cl)
+
+mifs %>%
+  traces() %>%
+  melt() %>%
+  ggplot(aes(x=iteration,y=value,group=L1,color=L1))+
+  geom_line()+
+  facet_wrap(~variable,scales="free_y")+
+  guides(color="none")
+
+mifs %>% 
+  as("data.frame") %>% 
+  gather(variable,value,-time,-.id) %>%
+  ggplot(aes(x=time,y=value,group=.id,color=.id))+
+  geom_line()+
+  facet_wrap(~variable,scales="free_y",ncol=1)+
+  guides(color="none")
+```
+
+
+Why can't we recover the values of beta and gamma from which we started??
+When population size is small, round-off errors matter. When the initial
+conditions are S=995 and I=5, Y 
+
+
+# Calculate likelihood    
+```{r}
+sir %>%
+  pfilter(Np=1000,params=c(beta=0.3,gamma=0.2)) -> pfsir
+
+replicate(10, pfsir %>% pfilter() %>% logLik()) -> lls
+lls
+
+
+foreach (mf=mifs,
+  .combine=rbind, .packages=c("pomp"), 
+  .errorhandling="remove", .inorder=FALSE) %dopar% {
+    
+    replicate(5, 
+      mf %>% pfilter() %>% logLik()
+    ) %>%
+      logmeanexp(se=TRUE) -> ll
+    
+    data.frame(as.list(coef(mf)),loglik=ll[1],loglik.se=ll[2])
+    
+  } -> estimates
+
+
+```
+
+
+
+```{r}
+logmeanexp(lls,se=TRUE) -> ll_sir1
+ll_sir1
+
+replicate(5, mf1 %>% pfilter() %>% logLik()) %>% logmeanexp(se=TRUE)
+
+sir %>% simulate(nsim=1e2,params=c(beta=coef(mf1)[[1]],gamma=coef(mf1)[[2]])) -> sirsim
+
+## compare fits with the data
+plot(sirsim[[1]]@states["Y",], type="l", ylim=c(0,30))
+for(i in 2:100)  lines(sirsim[[i]]@states["Y",])
+points(out$obs, col=2, lwd=2)
+points(sirsim[[1]]@data[1,], col=3)
+points(sirsim[[2]]@data[1,], col=3)
+for(i in 2:100) points(sirsim[[i]]@data[1,], col=2, lwd=2)
+
+lines(sirsim[[3]]@data[1,], col=2, lwd=2)i
+
+```
+
+
+## Global search
+```{r}
+Csnippet("
+  double dW = rnorm(0,sqrt(dt));
+  N += r*N*(1-N/K)*dt+sigma*N*dW;
+") -> vpstepC
+
+parus %>%
+  pomp(
+    times="year", t0=1960,
+    rinit=rinit,
+    rmeasure=rmeas,
+    rprocess=euler(vpstepC,delta.t=1/365),
+    statenames="N",
+    paramnames=c("r","K","sigma","b","N_0")
+  ) -> vpC
+
+Csnippet("
+  lik = dpois(pop,b*N,give_log);
+") -> dmeas
+
+sobol_design(
+  lower=c(beta=1e-6,gamma=1e-6),
+  upper=c(beta=1-1e-6,gamma=1-1e-6),
+  nseq=10
+) -> guesses
+guesses
+
+library(parallel)
+library(doParallel)
+library(foreach)
+
+ncores <- detectCores()
+cl <- makeCluster(getOption("cl.cores", ncores - 2))
+doParallel::registerDoParallel(cl)
+
+foreach (guess=iter(guesses,"row"),
+         .combine=c, .packages=c("pomp"),
+         .errorhandling="remove", .inorder=FALSE) %dopar% {
+    mf1 %>% mif2(params=guess)} -> mifs
+
+parallel::stopCluster(cl)
+
+mifs %>%
+  traces() %>%
+  melt() %>%
+  # filter(variable!="b") %>%
+  ggplot(aes(x=iteration,y=value,group=variable,color=variable))+
+  geom_line()+
+  facet_wrap(~variable,scales="free_y")+
+  guides(color="none")
+```
+
+```{r}
+
+pfsir <- pfilter(sir, Np=1000, paramnames = c("beta"), filter.mean = T, filter.traj = T)
+
+plot(pfsir@data[1,])
+lines(pfsir@filter.mean["I",], col=2)
+
+## How can I beta time-varying and 
+# created by the sir ode model with 
+# library(Kmisc)
+# y0 <- c(S = 1e7-10, I = 10, R = 0, CI = 10) # initial values
+# params <- c(beta = 0.3, gamma = 0.2) # parameter values
+# times <- seq(0, 50, by = 1) # daily output for 150 days
+# library(deSolve)
+# library(tidyverse)
+# ode(y = y0, times = times, func = ode_sir, parms = params) %>% 
+#   as.data.frame() -> out 
+# daily_onset <- dput(round(c(0, diff(out$CI))))
+
+daily_onset <- c(0, 3, 3, 4, 4, 5, 5, 6, 6, 7, 8, 9, 9, 10, 12, 13, 14, 16, 
+17, 19, 21, 23, 26, 28, 31, 35, 38, 42, 47, 52, 57, 63, 70, 77, 
+86, 95, 104, 115, 128, 141, 156, 172, 190, 210, 232, 257, 284, 
+314, 346, 383, 423)
+
+sir.step <- "
+  double N = S + I + R;
+  logbeta += rnorm(0, vol);
+  double lambda = exp(logbeta) * I / N;
+  double infection = rbinom(S,  1 - exp(-lambda * dt));
+  double recovery = rbinom(I, 1 - exp(-gamma * dt));
+  S += -infection;
+  I += infection - recovery;
+  R += recovery;
+  Y += infection;
+"
+
+rmeas <-"
+  Z = rpois(Y);
+"
+
+dmeas <-"
+  lik = dpois(Z, Y, give_log);
+"
+
+rinit <-"
+  S=1e7-10;
+  I=10;
+  R=0;
+  Y=0;
+  logbeta=log(0.3);
+"
+
+pomp(data = data.frame(time=seq(0,50,by=1),Z=daily_onset),
+     times = "time",
+     t0 = 0,
+     rmeasure = Csnippet(rmeas),
+     dmeasure = Csnippet(dmeas),
+     rprocess = euler(Csnippet(sir.step), delta.t = 0.25),
+     statenames = c("S","I","R","Y","logbeta"),
+     paramnames = c("vol","gamma"), 
+     rinit = Csnippet(rinit),
+     accumvars="Y",
+     params = c(vol=0.4,gamma=0.2)
+) -> sir
+
+pfsir <- pfilter(sir, Np=10000, paramnames = c("vol","gamma"), filter.mean = T, filter.traj = T)
+
+plot(pfsir@data[1,])
+lines(pfsir@filter.mean["Y",], col=2)
+# beta
+plot(exp(pfsir@filter.mean["logbeta",])*1e7/pfsir@filter.mean["S",])
+```
+
+### Iterated filtering
+```{r}
+library(pomp)
+Csnippet("
+  pop = rpois(b*N);  
+  ") -> rmeas
+
+Csnippet("
+  N = N_0;
+  ") -> rinit
+Csnippet("
+  double dW = rnorm(0,sqrt(dt));
+  N += r*N*(1-N/K)*dt+sigma*N*dW;
+") -> vpstepC
+
+parus %>%
+  pomp(
+    times="year", t0=1960,
+    rinit=rinit,
+    rmeasure=rmeas,
+    rprocess=euler(vpstepC,delta.t=1/365),
+    statenames="N",
+    paramnames=c("r","K","sigma","b","N_0")
+  ) -> vpC
+
+sobol_design(
+  lower=c(r=0,K=100,sigma=0,N_0=150,b=1),
+  upper=c(r=5,K=600,sigma=2,N_0=150,b=1),
+  nseq=100
+) -> guesses
+plot(guesses,pch=16)
+
+Csnippet("
+  lik = dpois(pop,b*N,give_log);
+") -> dmeas
+
+vpC %>%
+  mif2(
+    params=z,
+    Np=1000,
+    Nmif=20,
+    dmeasure=dmeas,
+    partrans=parameter_trans(log=c("r","K","sigma","N_0")),
+    rw.sd=rw.sd(r=0.02,K=0.02,sigma=0.02,N_0=ivp(0.02)),
+    cooling.fraction.50=0.5,
+    paramnames=c("r","K","sigma","N_0","b"),
+    statenames=c("N")
+  ) -> mf1
+plot(mf1)
+
+## estimating the log likelihood
+replicate(5, mf1 %>% pomp::pfilter() %>% logLik()) %>% logmeanexp(se=TRUE)
+
+
+library(parallel)
+library(doParallel)
+library(foreach)
+ncores <- detectCores()
+
+cl <- makeCluster(getOption("cl.cores", ncores - 2))
+doParallel::registerDoParallel(cl)
+
+foreach (guess=iter(guesses,"row"),
+         .combine=c, .packages=c("pomp"),
+         .errorhandling="remove", .inorder=FALSE) %dopar% {
+        mf1 %>% mif2(params=guess)} -> mifs
+
+parallel::stopCluster(cl)
+library(tidyverse)
+mifs %>%
+  traces() %>%
+  melt() %>%
+  filter(variable!="b") %>%
+  ggplot(aes(x=iteration,y=value,group=L1,color=L1))+
+  geom_line()+
+  facet_wrap(~variable,scales="free_y")+
+  guides(color="none")
+
+
+# Diagnostics in the last iteration of the filter
+mifs %>% 
+  as("data.frame") %>% 
+  gather(variable,value,-year,-.id) %>%
+  ggplot(aes(x=year,y=value,group=.id,color=.id))+
+  geom_line()+
+  facet_wrap(~variable,scales="free_y",ncol=1)+
+  guides(color="none")
+
+# Evaluate the likelihood of the estimates through several independent particle
+# filter operation
+cl <- makeCluster(getOption("cl.cores", ncores - 2))
+doParallel::registerDoParallel(cl)
+
+foreach (mf=mifs,
+  .combine=rbind, .packages=c("pomp"), 
+  .errorhandling="remove", .inorder=FALSE) %dopar% {
+    
+    replicate(5, 
+      mf %>% pfilter() %>% logLik()
+    ) %>%
+      logmeanexp(se=TRUE) -> ll
+    
+    data.frame(as.list(coef(mf)),loglik=ll[1],loglik.se=ll[2])
+    
+  } -> estimates
+
+parallel::stopCluster(cl)
+
+# likelihood profile
+estimates %>%
+  filter(loglik>max(loglik)-10) %>%
+  select(r,K,sigma,N_0,b) %>%
+  apply(2,range) -> ranges
+ranges
+
+profile_design(
+  r=10^seq(
+    from=log10(ranges[1,1]),
+    to=log10(ranges[2,1]),
+    length=20
+  ),
+  lower=ranges[1,-1],
+  upper=ranges[2,-1],
+  nprof=50
+) -> starts
+
+dim(starts)
+
+```
+
+
+```{r}
+library(pomp)
+library(tidyverse)
+seir_step <- Csnippet("
+  double N = S + E1 + E2 + I + R;
+  double dN_SE1 = beta * S * I / N * dt;
+  double dN_E1E2 = 2 * sigma * E1 * dt;
+  double dN_E2I = 2 * sigma * E2 * dt;
+  double dN_IR = gamma * I * dt;
+  S +=  - dN_SE1;
+  E1 += dN_SE1 - dN_E1E2;
+  E2 += dN_E1E2 - dN_E2I;
+  I += dN_E2I - dN_IR;
+  R += dN_IR;
+  H += dN_SE1;
+")
+
+seir_rinit <- Csnippet("
+  S = S_0;
+  E1 = E1_0;
+  E2 = E2_0;
+  I = I_0;
+  R = R_0;
+  H = H_0;
+")
+
+seir_dmeas <- Csnippet("
+  lik = dpois(daily_infect, H, give_log);
+")
+
+seir_rmeas <- Csnippet("
+  daily_infect = rpois(H);
+")
+
+dat <- data.frame(day = Rt_data$t, daily_infect = Rt_data$daily_infect)
+
+dat %>% pomp(
+  times = "day", 
+  t0 = 1,
+  rprocess = euler(seir_step, delta.t = 0.2),
+  rinit = seir_rinit,
+  rmeasure = seir_rmeas,
+  dmeasure = seir_dmeas,
+  accumvars = "H",
+  statenames = c("S", "E1", "E2", "I", "R", "H"),
+  paramnames = c("beta", "sigma", "gamma", "S_0", "E1_0", "E2_0", "I_0", "R_0", "H_0")) -> covid_seir
+
+covid_seir %>%
+  simulate(params = c(beta=1.2*0.25, sigma=0.25, gamma=0.25,
+                      S_0=1e7, E1_0=40, E2_0=40, I_0=100, R_0=0, H_0=0),
+nsim = 20, format="data.frame", include.data=TRUE) -> sims
+
+sims %>%
+  ggplot(aes(x=day,y=daily_infect, group=.id, color=.id=="data"))+
+  geom_line()+
+  guides(color=FALSE)
+
+covid_seir %>%
+  pfilter(Np=1000, paramnames="beta") -> pfrick
+
+```
+
+```{r}
+library(pomp)
+library(tidyverse)
+seir_step <- Csnippet("
+  double N = S + E1 + E2 + I + R;
+  double dN_SE1 = beta * S * I / N * dt;
+  double dN_E1E2 = 2 * 0.25 * E1 * dt;
+  double dN_E2I = 2 * 0.25 * E2 * dt;
+  double dN_IR = 0.25 * I * dt;
+  S +=  - dN_SE1;
+  E1 += dN_SE1 - dN_E1E2;
+  E2 += dN_E1E2 - dN_E2I;
+  I += dN_E2I - dN_IR;
+  R += dN_IR;
+  H += dN_SE1;
+")
+
+seir_rinit <- Csnippet("
+  S = 1e7;
+  E1 = 40;
+  E2 = 40;
+  I = 100;
+  R = 0;
+  H = 0;
+")
+
+seir_dmeas <- Csnippet("
+  lik = dpois(daily_infect, H, give_log);
+")
+
+seir_rmeas <- Csnippet("
+  daily_infect = rpois(H);
+")
+
+dat <- data.frame(day = Rt_data$t, daily_infect = as.integer(Rt_data$daily_infect))
+
+dat %>% pomp(
+  times = "day", 
+  t0 = 1,
+  rprocess = euler(seir_step, delta.t = 0.2),
+  rinit = seir_rinit,
+  rmeasure = seir_rmeas,
+  dmeasure = seir_dmeas,
+  accumvars = "H",
+  statenames = c("S", "E1", "E2", "I", "R", "H"),
+  paramnames = c("beta")) -> covid_seir
+
+covid_seir %>%
+  simulate(params = c(beta=1.2*0.25),
+nsim = 20, format="data.frame", include.data=TRUE) -> sims
+
+sims %>%
+  ggplot(aes(x=day,y=daily_infect, group=.id, color=.id=="data"))+
+  geom_line()+
+  guides(color=FALSE)
+
+pf = pfilter(covid_seir, Np=1000, params = c(beta = 0.3), 
+             filter.mean = T, filter.traj = T, verbose = T) 
+pf@filter.mean %>% 
+  t() %>%
+  as.data.frame() %>%
+  mutate(time = 1:n()) %>% 
+  pivot_longer(-time) %>%
+  filter(name == "I") %>% 
+  ggplot(aes(time, value)) +
+  geom_line(aes(color = name))
+  
+```      
+
+```{r}
+ewmeas %>%
+  subset(time < 1952) %>%
+  pomp(
+    times="time",t0=1948,
+    rprocess=euler(
+      Csnippet("
+        int nrate = 6;
+        double rate[nrate];	// transition rates
+        double trans[nrate];	// transition numbers
+        double dW;
+
+        // gamma noise, mean=dt, variance=(sigma^2 dt)
+        dW = rgammawn(sigma,dt);
+
+        // compute the transition rates
+        rate[0] = mu*pop;	// birth into susceptible class
+        rate[1] = (iota+Beta*I*dW/dt)/pop; // force of infection
+        rate[2] = mu;		// death from susceptible class
+        rate[3] = gamma;	// recovery
+        rate[4] = mu;		// death from infectious class
+        rate[5] = mu; 		// death from recovered class
+
+        // compute the transition numbers
+        trans[0] = rpois(rate[0]*dt);	// births are Poisson
+        reulermultinom(2,S,&rate[1],dt,&trans[1]);
+        reulermultinom(2,I,&rate[3],dt,&trans[3]);
+        reulermultinom(1,R,&rate[5],dt,&trans[5]);
+
+        // balance the equations
+        S += trans[0]-trans[1]-trans[2];
+        I += trans[1]-trans[3]-trans[4];
+        R += trans[3]-trans[5];
+      "),
+      delta.t=1/52/20
+    ),
+    rinit=Csnippet("
+      double m = pop/(S_0+I_0+R_0);
+      S = nearbyint(m*S_0);
+      I = nearbyint(m*I_0);
+      R = nearbyint(m*R_0);
+    "),
+    paramnames=c("mu","pop","iota","gamma","Beta","sigma",
+      "S_0","I_0","R_0"),
+    statenames=c("S","I","R"),
+    params=c(mu=1/50,iota=10,pop=50e6,gamma=26,Beta=400,sigma=0.1,
+      S_0=0.07,I_0=0.001,R_0=0.93)
+  ) -> ew1
+```

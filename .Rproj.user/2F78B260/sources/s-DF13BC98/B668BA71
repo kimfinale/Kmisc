@@ -1,0 +1,29 @@
+{
+    "id": "B668BA71",
+    "path": "~/Workspace/Kmisc/Rt.Rmd",
+    "project_path": "Rt.Rmd",
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1630294734599.0,
+    "source_on_save": false,
+    "relative_order": 1,
+    "properties": {
+        "tempName": "Untitled1",
+        "chunk_output_type": "console",
+        "source_window_id": "",
+        "Source": "Source",
+        "cursorPosition": "18,63",
+        "scrollLine": "0",
+        "marks": "<:150,52\n>:150,57"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1630415827,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1630415827548,
+    "read_only": false,
+    "read_only_alternatives": []
+}

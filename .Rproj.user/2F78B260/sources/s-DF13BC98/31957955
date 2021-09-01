@@ -1,0 +1,30 @@
+{
+    "id": "31957955",
+    "path": "~/Workspace/Kmisc/README.Rmd",
+    "project_path": "README.Rmd",
+    "type": "r_markdown",
+    "hash": "0",
+    "contents": "",
+    "dirty": false,
+    "created": 1630463557429.0,
+    "source_on_save": false,
+    "relative_order": 2,
+    "properties": {
+        "tempName": "Untitled2",
+        "cursorPosition": "324,0",
+        "scrollLine": "300",
+        "marks": "<:304,3\n>:305,-1",
+        "chunk_output_type": "console",
+        "Source": "Source",
+        "docOutlineVisible": "1",
+        "docOutlineSize": "143"
+    },
+    "folds": "",
+    "lastKnownWriteTime": 1628514904,
+    "encoding": "UTF-8",
+    "collab_server": "",
+    "source_window": "",
+    "last_content_update": 1628514904,
+    "read_only": false,
+    "read_only_alternatives": []
+}

@@ -1,0 +1,58 @@
+---
+title: "Figure"
+author: "Jong-Hoon Kim"
+date: "8/31/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r cars}
+dat <- readRDS("outputs/Rt_dataset_20210831T155155.rds")
+d <- data.frame(t = dat$time, 
+                Rt = dat$Rt, 
+                ode_inf = dat$ode$daily_infected,
+                ode_conf = dat$ode$daily_confirmed)
+
+library(ggplot2)
+theme_set(theme_bw())
+A <- ggplot(d, aes(t, Rt))+
+  geom_line()+
+  labs(y = expression(italic(R)[italic(t)]), x = "")
+
+library(dplyr)
+library(tidyr)
+
+stoch <- dat$stoch_perfect_obs$confirmed[,1:10]
+stoch$t <- dat$time
+stoch <- pivot_longer(stoch, cols = -t, names_to = "run", values_to = "val")
+  
+B <- ggplot(stoch, aes(x = t))+
+  geom_line(aes(t, val, group = run), color = "grey80")+
+  geom_line(data = d, aes(x = t, y = ode_inf), color = "darkred")+
+  geom_line(data = d, aes(x = t, y = ode_conf), color = "steelblue")+
+  labs(x = "Time", y = "Number of cases") 
+  
+gA <- ggplotGrob(A)
+gB <- ggplotGrob(B)
+
+png("plots/rt_case.png", width = 480*1.2, height = 480*1.2, res = 2*72)
+grid::grid.newpage()
+grid::grid.draw(rbind(gA, gB))
+dev.off()
+
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
