@@ -289,63 +289,226 @@ points(sirsim[[1]]@data[1,], col=3)
 points(sirsim[[2]]@data[1,], col=3)
 for(i in 2:100) points(sirsim[[i]]@data[1,], col=2, lwd=2)
 
-lines(sirsim[[3]]@data[1,], col=2, lwd=2)i
+lines(sirsim[[3]]@data[1,], col=2, lwd=2)
 
 ```
 
 
-## Global search
+## $\beta$ as time-dependent variable
 ```{r}
-Csnippet("
-  double dW = rnorm(0,sqrt(dt));
-  N += r*N*(1-N/K)*dt+sigma*N*dW;
-") -> vpstepC
+library(pomp)
+sir_step <- "
+  logbeta += rnorm(0, vol);
+  double N = S + I + R;
+  double lambda = exp(logbeta) * I / N;
+  double infection = rbinom(S, 1-exp(-lambda*dt));
+  double recovery = rbinom(I, 1-exp(-gamma*dt));
+  
+  S += -infection;
+  I += infection - recovery;
+  R += recovery;
+  Y += infection; 
+"
 
-parus %>%
-  pomp(
-    times="year", t0=1960,
-    rinit=rinit,
-    rmeasure=rmeas,
-    rprocess=euler(vpstepC,delta.t=1/365),
-    statenames="N",
-    paramnames=c("r","K","sigma","b","N_0")
-  ) -> vpC
+rmeas <-"
+  Z = rpois(Y);
+"
 
-Csnippet("
-  lik = dpois(pop,b*N,give_log);
-") -> dmeas
+dmeas <-"
+  lik = dpois(Z, Y, give_log);
+"
 
-sobol_design(
-  lower=c(beta=1e-6,gamma=1e-6),
-  upper=c(beta=1-1e-6,gamma=1-1e-6),
-  nseq=10
-) -> guesses
-guesses
+rinit <-"
+  S = 9950;
+  I = 50;
+  R = 0;
+  Y = 0;
+  logbeta = log(0.3);
+"
 
-library(parallel)
-library(doParallel)
-library(foreach)
+d <- data.frame(time = seq(0, 100, by=1), Z=out[, "obs"])
+pomp(data = d,
+     times = "time",
+     t0 = 0,
+     rmeasure = Csnippet(rmeas),
+     dmeasure = Csnippet(dmeas),
+     rprocess = euler(Csnippet(sir_step), delta.t = 0.2),
+     statenames = c("S", "I", "R", "Y", "logbeta"),
+     paramnames = c("vol", "gamma"),
+     accumvars = "Y",
+     rinit = Csnippet(rinit)) -> sir
 
-ncores <- detectCores()
-cl <- makeCluster(getOption("cl.cores", ncores - 2))
-doParallel::registerDoParallel(cl)
+sir %>%
+  simulate(params=c(gamma=0.2, vol=0.2)) %>%
+  plot()
 
-foreach (guess=iter(guesses,"row"),
-         .combine=c, .packages=c("pomp"),
-         .errorhandling="remove", .inorder=FALSE) %dopar% {
-    mf1 %>% mif2(params=guess)} -> mifs
+# Local search
+set.seed(234)
+sir %>%
+  mif2(
+    params=c(vol=0.5, gamma=0.5),
+    Np=1000,
+    Nmif=50,
+    partrans=parameter_trans(log=c("vol","gamma")),
+    paramnames=c("vol","gamma"),
+    rw.sd=rw.sd(vol=0.01,gamma=0.01),
+    cooling.fraction.50=0.5) -> mf1
 
-parallel::stopCluster(cl)
+coef(mf1)
+plot(mf1)
 
-mifs %>%
-  traces() %>%
-  melt() %>%
-  # filter(variable!="b") %>%
-  ggplot(aes(x=iteration,y=value,group=variable,color=variable))+
-  geom_line()+
-  facet_wrap(~variable,scales="free_y")+
-  guides(color="none")
+
+sirsim <- sir %>% 
+  simulate(nsim = 1e2, 
+           params = c(vol=coef(mf1)[[1]],gamma=coef(mf1)[[2]])) 
+
+## compare fits with the data
+plot(sirsim[[1]]@states["Y",], type="l", ylim=c(0,200))
+for(i in 2:100)  lines(sirsim[[i]]@states["Y",])
+points(out$obs, col=2, lwd=2)
+points(sirsim[[1]]@data[1,], col=3)
+
+
+
+## beta
+plot(exp(sirsim[[1]]@states["logbeta",]), type="l", ylim=c(0,1))
+for(i in 2:100)  lines(exp(sirsim[[i]]@states["logbeta",]))
+
+Rt <- data.frame(matrix(NA, nrow=101, ncol=100))
+for(i in 1:100) {
+  N <- sirsim[[i]]@states["S",]+                                      sirsim[[i]]@states["I",]+sirsim[[i]]@states["R",]
+  
+  Rt[,i] <- 
+    exp(sirsim[[i]]@states["logbeta",])/0.2*sirsim[[i]]@states["S",]/N
+}
+Rt$rowmean <- rowMeans(Rt)
+
+Rt$t <- 0:100
+plot(Rt$t, Rt$rowmean, type="l")
 ```
+
+## SEPIAR $\beta$ as time-dependent variable
+```{r}
+library(pomp)
+sepiar_step <- Csnippet("
+  logbeta += rnorm(0, vol);
+  double N = S + E + P + I + A + R;
+  double lambda = exp(logbeta) * (I + ba*A + bp*P) / N;
+  double infection = rbinom(S, 1-exp(-lambda*dt));
+  double E_to_P = rbinom(E, 1-exp(-epsilon*dt));
+  double rate = 1/(1/delta - 1/epsilon);
+  double rate_from_P[2], trans_from_P[2];
+  rate_from_P[0] = rate*(1-fa);
+  rate_from_P[1] = rate*fa;
+
+  // Rprintf(\"rate_from_P[0] = %lg \\n\", rate_from_P[0]);
+  // Rprintf(\"rate_from_P[1] = %lg \\n\", rate_from_P[1]);
+  
+  reulermultinom(2, P, &rate_from_P[0], dt, &trans_from_P[0]);
+  double recovery1 = rbinom(I, 1-exp(-gamma*dt));
+  double recovery2 = rbinom(A, 1-exp(-gamma*dt));
+  
+  // Rprintf(\"trans_from_P[0] = %lg \\n\", trans_from_P[0]);
+  // Rprintf(\"trans_from_P[1] = %lg \\n\", trans_from_P[1]);
+  
+  S += -infection;
+  E += infection - E_to_P;
+  P += E_to_P - trans_from_P[0] - trans_from_P[1];
+  I += trans_from_P[0] - recovery1;
+  A += trans_from_P[1]- recovery2;
+  R += recovery1 + recovery2;
+  Y += infection;
+")
+
+rmeas <- Csnippet("
+  Z = Y;
+")
+
+dmeas <- Csnippet("
+  lik = dpois(Z, Y+1e-6, give_log);
+")
+
+rinit <- Csnippet("
+  S = 1e7;
+  E = 0;
+  P = 0;
+  I = 10;  
+  A = 0;
+  R = 0;
+  Y = 0;
+  logbeta = log(0.24);
+")
+
+dat <- readRDS("outputs/Rt_dataset_20210831T201644.rds")
+d <- data.frame(time = dat$time, Z = round(dat$ode$daily_infected))
+
+sepiar <- pomp(data = d,
+     times = "time",
+     t0 = 0,
+     rinit = rinit,
+     rmeasure = rmeas,
+     dmeasure = dmeas,
+     rprocess = euler(sepiar_step, delta.t = 0.2),
+     statenames = c("S","E","P","I","A","R","Y","logbeta"),
+     paramnames = c("vol","gamma","ba","bp","fa","epsilon","delta"),
+     accumvars = "Y")
+
+```
+
+
+```{r}
+sepiar %>% simulate(params=c(gamma=0.4,vol=0.0002,ba=1,bp=1,
+                             fa=0.3,epsilon=0.4,delta=0.2))%>% plot()
+# Local search
+set.seed(234)
+sepiar %>%
+  mif2(
+    params=c(gamma=0.4,vol=0.2,ba=1,bp=1,fa=0.3,
+             epsilon=0.4,delta=0.2),
+    Np=10000,
+    Nmif=100,
+    partrans=parameter_trans(log=c("vol")),
+    paramnames=c("vol"),
+    rw.sd=rw.sd(vol=0.05),
+    cooling.fraction.50=0.5) -> mf1
+
+coef(mf1)
+plot(mf1)
+
+sepiar_sim <- sepiar %>% 
+  simulate(nsim = 1e2, 
+           params = c(vol=coef(mf1)[[2]],gamma=coef(mf1)[[1]],
+                      ba=1,bp=1,fa=0.3,epsilon=0.4,delta=0.2)) 
+
+## compare fits with the data
+plot(sepiar_sim[[1]]@states["Y",], type="l", ylim=c(0,2000))
+for(i in 2:100)  lines(sepiar_sim[[i]]@states["Y",])
+points(sepiar@data["Z",], col=2, lwd=2)
+```
+
+```{r}
+N <- sepiar_sim[[1]]@states["S",] + sepiar_sim[[1]]@states["E",] + 
+  sepiar_sim[[1]]@states["P",] + sepiar_sim[[1]]@states["I",] + 
+  sepiar_sim[[1]]@states["A",] + sepiar_sim[[1]]@states["R",] 
+
+
+## beta
+plot(exp(sepiar_sim[[1]]@states["logbeta",]), type="l", ylim=c(0,1))
+for(i in 2:100)  lines(exp(sepiar_sim[[i]]@states["logbeta",]))
+
+Rt <- data.frame(matrix(NA, nrow=201, ncol=100))
+for(i in 1:100) {
+  Rt[,i] <- 
+    exp(sepiar_sim[[i]]@states["logbeta",])/0.2*sepiar_sim[[i]]@states["S",]/N
+}
+Rt$rowmean <- rowMeans(Rt)
+
+Rt$t <- 0:200
+plot(Rt$t, Rt$rowmean, type="l")
+```
+
+
+
 
 ```{r}
 

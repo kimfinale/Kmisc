@@ -23,23 +23,19 @@ ode_sepair <- function(t, y, params) {
 
   ## set beta based on the predefined Rt
   ## first set the duration of infectiousness correct
-  ## account for the relative infectiousness of P and A state
+  ## account for the relative infectiousness of P and A states
   durP <- (1 / params[["delta"]] - 1 / params[["epsilon"]])
   durI <- (1 / params[["gamma"]])
-  fa <- params[["frac_a"]]
-  rhoa <- params[["rho_a"]]
-  rhop <- params[["rho_p"]]
-  R0_dur <- ((1 - fa) + fa * rhoa) * durI + rhop * durP
+  fa <- params[["fa"]]# fraction of asymptomatic state
+  bp <- params["bp"] # relative infectiousness of pre-symptomatic state
+  bs <- params["bs"] # relative infectiousness of asymptomatic state
+  R0_dur <- ((1 - fa) + fa * ba) * durI + bp * durP
 
 
   ## now extract the parameters
   epsilon <- params["epsilon"]
   delta <- params["delta"]
   gamma <- params["gamma"]
-
-  rho_p <- params["rho_p"] # relative infectiousness of pre-symptomatic state
-  rho_a <- params["rho_a"] # relative infectiousness of asymptomatic state
-  frac_a <- params["frac_a"] # fraction of asymptomatic state
 
   N <- S + E + P + A + I + R
   # beta <- params["beta"]
@@ -55,10 +51,10 @@ ode_sepair <- function(t, y, params) {
   dCI <- 0
 
   rate_from_p <- 1 / (1/delta - 1/epsilon) # rate of transitioning from state P
-  rate_StoE <- beta_t * (rho_p * P + rho_a * A + I)
+  rate_StoE <- beta_t * (bp * P + ba * A + I)
   rate_EtoP <- epsilon * E
-  rate_PtoA <- rate_from_p * frac_a * P
-  rate_PtoI <- rate_from_p * (1 - frac_a) * P
+  rate_PtoA <- rate_from_p * fa * P
+  rate_PtoI <- rate_from_p * (1 - fa) * P
   rate_AtoR <- gamma * A
   rate_ItoR <- gamma * I
 
