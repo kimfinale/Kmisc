@@ -9,7 +9,7 @@
 #' \code{$\gamma$} rate of transitioning from infectious to recovered state
 #' @return A list of changes in S, E, I, and R
 #' @export
-ode_sepair <- function(t, y, params) {
+ode_sepair <- function(t, y, params, Rt_varying = TRUE) {
 
   S <- y["S"]
   E <- y["E"]
@@ -38,9 +38,10 @@ ode_sepair <- function(t, y, params) {
   gamma <- params["gamma"]
 
   N <- S + E + P + A + I + R
-  # beta <- params["beta"]
-  beta_t <- get_Rt(t = t) / R0_dur #transmission rate at time t, reflecting already S/N
-
+  beta <- params["beta"]
+  if (Rt_varying) {
+    beta <- get_Rt(t = t) / R0_dur #transmission rate at time t, reflecting already S/N
+  }
   dS <- 0
   dE <- 0
   dP <- 0
@@ -51,7 +52,7 @@ ode_sepair <- function(t, y, params) {
   dCI <- 0
 
   rate_from_p <- 1 / (1/delta - 1/epsilon) # rate of transitioning from state P
-  rate_StoE <- beta_t * (bp * P + ba * A + I)
+  rate_StoE <- beta * (bp * P + ba * A + I)
   rate_EtoP <- epsilon * E
   rate_PtoA <- rate_from_p * fa * P
   rate_PtoI <- rate_from_p * (1 - fa) * P

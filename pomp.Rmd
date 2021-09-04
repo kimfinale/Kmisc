@@ -452,24 +452,37 @@ sepiar <- pomp(data = d,
      statenames = c("S","E","P","I","A","R","Y","logbeta"),
      paramnames = c("vol","gamma","ba","bp","fa","epsilon","delta"),
      accumvars = "Y")
-
 ```
 
-
+## Simulate
 ```{r}
-sepiar %>% simulate(params=c(gamma=0.4,vol=0.0002,ba=1,bp=1,
+sepiar %>% simulate(params=c(gamma=0.4,vol=0.3,ba=1,bp=1,
                              fa=0.3,epsilon=0.4,delta=0.2))%>% plot()
+
+sepiar_sim <- sepiar %>% 
+  simulate(nsim = 1e2, 
+           params = c(vol=0.3*1e-6,gamma=0.4,
+                      ba=1,bp=1,fa=0.3,epsilon=0.4,delta=0.2)) 
+
+## compare fits with the data
+plot(sepiar_sim[[1]]@states["Y",], type="l", ylim=c(0,2000))
+for(i in 2:100) lines(sepiar_sim[[i]]@states["Y",])
+lines(sepiar@data["Z",], col=2, lwd=2)
+```
+
+##Fit
+```{r}
 # Local search
 set.seed(234)
 sepiar %>%
   mif2(
-    params=c(gamma=0.4,vol=0.2,ba=1,bp=1,fa=0.3,
+    params=c(gamma=0.4,vol=0.2*1e-6,ba=1,bp=1,fa=0.3,
              epsilon=0.4,delta=0.2),
     Np=10000,
     Nmif=100,
-    partrans=parameter_trans(log=c("vol")),
-    paramnames=c("vol"),
-    rw.sd=rw.sd(vol=0.05),
+    partrans=parameter_trans(log=c("epsilon")),
+    paramnames=c("epsilon"),
+    rw.sd=rw.sd(epsilon=0.05),
     cooling.fraction.50=0.5) -> mf1
 
 coef(mf1)

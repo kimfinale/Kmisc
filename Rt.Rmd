@@ -14,8 +14,7 @@ editor_options:
 devtools::load_all()
 R0 <- 1.2
 params <- c(beta = R0/5, epsilon = 1/2.5, delta = 1/5, 
-            gamma = 1/2.5, rho_p = 1, 
-            rho_a = 1, frac_a = 0.3, frac_detect = 1)
+            gamma = 1/2.5, bp = 1, ba = 1, fa = 0.3, frac_detect = 1)
 y0 <- c(S = 1e7, E = 0, P = 0, A = 0, I = 10, R = 0, CE = 0, CI = 10)
 tend <- 200
 
@@ -189,13 +188,13 @@ Rt <- sapply(1:101, function(x) get_Rt(x))
 dat <- readRDS("outputs/Rt_data_set.rds")
 library(pfilter)
 params <- c(epsilon = 1/2.5, delta = 1/5, 
-            gamma = 1/2.5, rho_p = 1, 
-            rho_a = 1, frac_a = 0.3, frac_detect = 1)
+            gamma = 1/2.5, bp = 1, 
+            ba = 1, fa = 0.3, frac_detect = 1)
 
 ## particle filter function has S, E, P, A, I, R, CE, CI, CR variables!!
 y0 <- c(S = 1e7, E = 0, P = 0, A = 0, I = 10, R = 0, CE = 0, CI = 10, CR = 0)
 tend <- 175
-parnames <- c("epsilon", "delta", "gamma", "rho_p", "rho_a", "frac_a")
+parnames <- c("epsilon", "delta", "gamma", "bp", "ba", "fa")
 for (pn in parnames){
   theta[[pn]] <- params[[pn]]
 }
