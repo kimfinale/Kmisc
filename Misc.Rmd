@@ -1,0 +1,20 @@
+---
+title: "Misc"
+author: "Jong-Hoon Kim"
+date: "12/2/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(data.table)
+library(tidyverse)
+
+d <- fread("C:\\Users\\jonghoon.kim\\Downloads\\literature_search.csv")
+d$V2 <- as.integer(d$V2)
+d %>% filter(!is.na(V2)) -> d2
+d3 <- d2[-23,] # 
+fwrite(d3, "C:\\Users\\jonghoon.kim\\Downloads\\literature_search_cleaned.csv")
+
+```

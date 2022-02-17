@@ -9,17 +9,14 @@
 #' \code{$\gamma$} rate of transitioning from infectious to recovered state
 #' @return A list of changes in S, E, I, and R
 #' @export
-ode_sepair <- function(t, y, params, Rt_varying = TRUE) {
+ode_sepair <- function(t, y, params) {
 
-  S <- y["S"]
-  E <- y["E"]
-  P <- y["P"]
-  A <- y["A"]
-  I <- y["I"]
-  R <- y["R"]
-  CE <- y["CE"] # cumulative infected used to extract over a period (e.g., daily)
-  CI <- y["CI"] # cumulative symptom onset to extract number over a period (e.g., daily)
-
+  S <- y[["S"]]
+  E <- y[["E"]]
+  P <- y[["P"]]
+  A <- y[["A"]]
+  I <- y[["I"]]
+  R <- y[["R"]]
 
   ## set beta based on the predefined Rt
   ## first set the duration of infectiousness correct
@@ -27,29 +24,39 @@ ode_sepair <- function(t, y, params, Rt_varying = TRUE) {
   durP <- (1 / params[["delta"]] - 1 / params[["epsilon"]])
   durI <- (1 / params[["gamma"]])
   fa <- params[["fa"]]# fraction of asymptomatic state
-  bp <- params["bp"] # relative infectiousness of pre-symptomatic state
-  bs <- params["bs"] # relative infectiousness of asymptomatic state
+  bp <- params[["bp"]] # relative infectiousness of pre-symptomatic state
+  ba <- params[["ba"]] # relative infectiousness of asymptomatic state
   R0_dur <- ((1 - fa) + fa * ba) * durI + bp * durP
 
-
   ## now extract the parameters
-  epsilon <- params["epsilon"]
-  delta <- params["delta"]
-  gamma <- params["gamma"]
+  epsilon <- params[["epsilon"]]
+  delta <- params[["delta"]]
+  gamma <- params[["gamma"]]
 
   N <- S + E + P + A + I + R
-  beta <- params["beta"]
-  if (Rt_varying) {
-    beta <- get_Rt(t = t) / R0_dur #transmission rate at time t, reflecting already S/N
+
+  beta <- params[["beta"]]
+  if (!is.null(params[["R0"]])) {
+    beta <- params[["R0"]] / R0_dur
   }
+  beta <- beta * S / N # transmission rate is adjusted by the prop of susc
+
+  if (params[["time_dep_Rt"]]) {
+    # when Rt is used, NO NEED for adjusting for the prop of susc
+     beta <- get_Rt(t) / R0_dur
+  }
+
   dS <- 0
   dE <- 0
   dP <- 0
   dA <- 0
   dI <- 0
   dR <- 0
+  # Cumulative variables (CE, infected; CI, symptom onset; CR, confirmed)
+  # used to extract numbers over a defined period (e.g., daily, weekly, monthly)
   dCE <- 0
   dCI <- 0
+  dCR <- 0
 
   rate_from_p <- 1 / (1/delta - 1/epsilon) # rate of transitioning from state P
   rate_StoE <- beta * (bp * P + ba * A + I)
@@ -60,13 +67,16 @@ ode_sepair <- function(t, y, params, Rt_varying = TRUE) {
   rate_ItoR <- gamma * I
 
   dS <- - rate_StoE
-  dE <-  rate_StoE - rate_EtoP
-  dP <-  rate_EtoP - rate_PtoA - rate_PtoI
-  dA <-  rate_PtoA - rate_AtoR
-  dI <-  rate_PtoI - rate_ItoR
-  dR <-  rate_AtoR + rate_ItoR
-  dCE <-  rate_StoE
-  dCI <-  rate_PtoI
+  dE <- rate_StoE - rate_EtoP
+  dP <- rate_EtoP - rate_PtoA - rate_PtoI
+  dA <- rate_PtoA - rate_AtoR
+  dI <- rate_PtoI - rate_ItoR
+  dR <- rate_AtoR + rate_ItoR
+  # Cumulative variables (CE, infected; CI, symptom onset; CR, confirmed)
+  # used to extract numbers over a defined period (e.g., daily, weekly, monthly)
+  dCE <- rate_StoE
+  dCI <- rate_PtoI
+  dCR <- rate_AtoR + rate_ItoR
 
-  return (list(c(dS, dE, dP, dA, dI, dR, dCE, dCI)))
+  return (list(c(dS, dE, dP, dA, dI, dR, dCE, dCI, dCR)))
 }

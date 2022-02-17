@@ -254,21 +254,15 @@ sir %>%
 replicate(10, pfsir %>% pfilter() %>% logLik()) -> lls
 lls
 
-
 foreach (mf=mifs,
   .combine=rbind, .packages=c("pomp"), 
   .errorhandling="remove", .inorder=FALSE) %dopar% {
-    
-    replicate(5, 
+  replicate(5, 
       mf %>% pfilter() %>% logLik()
     ) %>%
       logmeanexp(se=TRUE) -> ll
-    
     data.frame(as.list(coef(mf)),loglik=ll[1],loglik.se=ll[2])
-    
   } -> estimates
-
-
 ```
 
 
@@ -387,13 +381,14 @@ Rt$t <- 0:100
 plot(Rt$t, Rt$rowmean, type="l")
 ```
 
+
 ## SEPIAR $\beta$ as time-dependent variable
 ```{r}
 library(pomp)
 sepiar_step <- Csnippet("
   logbeta += rnorm(0, vol);
   double N = S + E + P + I + A + R;
-  double lambda = exp(logbeta) * (I + ba*A + bp*P) / N;
+  double lambda = exp(logbeta)*(I + ba*A + bp*P) / N;
   double infection = rbinom(S, 1-exp(-lambda*dt));
   double E_to_P = rbinom(E, 1-exp(-epsilon*dt));
   double rate = 1/(1/delta - 1/epsilon);
@@ -421,11 +416,11 @@ sepiar_step <- Csnippet("
 ")
 
 rmeas <- Csnippet("
-  Z = Y;
+  Z = rpois(Y);
 ")
 
 dmeas <- Csnippet("
-  lik = dpois(Z, Y+1e-6, give_log);
+  lik = dpois(Z, Y+0.0001, give_log);
 ")
 
 rinit <- Csnippet("
@@ -436,7 +431,7 @@ rinit <- Csnippet("
   A = 0;
   R = 0;
   Y = 0;
-  logbeta = log(0.24);
+  logbeta = logbeta_0;
 ")
 
 dat <- readRDS("outputs/Rt_dataset_20210831T201644.rds")
@@ -446,24 +441,24 @@ sepiar <- pomp(data = d,
      times = "time",
      t0 = 0,
      rinit = rinit,
+     rprocess = euler(sepiar_step, delta.t=0.2),
      rmeasure = rmeas,
      dmeasure = dmeas,
-     rprocess = euler(sepiar_step, delta.t = 0.2),
      statenames = c("S","E","P","I","A","R","Y","logbeta"),
-     paramnames = c("vol","gamma","ba","bp","fa","epsilon","delta"),
-     accumvars = "Y")
+     paramnames = c("logbeta_0","vol","gamma","ba","bp","fa","epsilon","delta"),
+     accumvars = "Y",
+     params=c(logbeta_0=log(0.24),gamma=0.4,vol=0.3,ba=1,bp=1,
+                             fa=0.3,epsilon=0.4,delta=0.2))
 ```
 
 ## Simulate
 ```{r}
-sepiar %>% simulate(params=c(gamma=0.4,vol=0.3,ba=1,bp=1,
+sepiar %>% simulate(params=c(logbeta_0=log(0.24), gamma=0.4,vol=0.3,ba=1,bp=1,
                              fa=0.3,epsilon=0.4,delta=0.2))%>% plot()
 
 sepiar_sim <- sepiar %>% 
-  simulate(nsim = 1e2, 
-           params = c(vol=0.3*1e-6,gamma=0.4,
-                      ba=1,bp=1,fa=0.3,epsilon=0.4,delta=0.2)) 
-
+  simulate(nsim = 1e2, params=c(gamma=0.4,vol=0.3,ba=1,bp=1,
+                             fa=0.3,epsilon=0.4,delta=0.2)) 
 ## compare fits with the data
 plot(sepiar_sim[[1]]@states["Y",], type="l", ylim=c(0,2000))
 for(i in 2:100) lines(sepiar_sim[[i]]@states["Y",])
@@ -476,34 +471,33 @@ lines(sepiar@data["Z",], col=2, lwd=2)
 set.seed(234)
 sepiar %>%
   mif2(
-    params=c(gamma=0.4,vol=0.2*1e-6,ba=1,bp=1,fa=0.3,
+    params=c(logbeta_0=log(0.2),gamma=0.4,vol=0.2,ba=1,bp=1,fa=0.3,
              epsilon=0.4,delta=0.2),
-    Np=10000,
-    Nmif=100,
-    partrans=parameter_trans(log=c("epsilon")),
-    paramnames=c("epsilon"),
-    rw.sd=rw.sd(epsilon=0.05),
+    Np=2000,
+    Nmif=1000,
+    # partrans=parameter_trans(log=c("logbeta_0")),
+    paramnames=c("logbeta_0"),
+    rw.sd=rw.sd(logbeta_0=0.01),
     cooling.fraction.50=0.5) -> mf1
 
 coef(mf1)
 plot(mf1)
 
 sepiar_sim <- sepiar %>% 
-  simulate(nsim = 1e2, 
-           params = c(vol=coef(mf1)[[2]],gamma=coef(mf1)[[1]],
+  simulate(nsim = 1e3, 
+           params = c(logbeta_0=coef(mf1)[[1]],gamma=0.4,vol=0.3,
                       ba=1,bp=1,fa=0.3,epsilon=0.4,delta=0.2)) 
 
 ## compare fits with the data
-plot(sepiar_sim[[1]]@states["Y",], type="l", ylim=c(0,2000))
+plot(sepiar_sim[[1]]@states["Y",], type="l", ylim=c(0,100))
 for(i in 2:100)  lines(sepiar_sim[[i]]@states["Y",])
-points(sepiar@data["Z",], col=2, lwd=2)
+lines(sepiar@data["Z",], col=2, lwd=2)
 ```
 
 ```{r}
 N <- sepiar_sim[[1]]@states["S",] + sepiar_sim[[1]]@states["E",] + 
   sepiar_sim[[1]]@states["P",] + sepiar_sim[[1]]@states["I",] + 
   sepiar_sim[[1]]@states["A",] + sepiar_sim[[1]]@states["R",] 
-
 
 ## beta
 plot(exp(sepiar_sim[[1]]@states["logbeta",]), type="l", ylim=c(0,1))
@@ -520,6 +514,139 @@ Rt$t <- 0:200
 plot(Rt$t, Rt$rowmean, type="l")
 ```
 
+
+## SEPIAR $\beta$ as time-invariant variable
+```{r}
+library(Kmisc)
+library(deSolve)
+library(tidyverse)
+devtools::load_all()
+params <- c(beta=0.24,gamma=0.4,ba=1,bp=1,fa=0.3,
+             epsilon=0.4,delta=0.2)
+y0 <- c(S=1e7,E=0,P=0,I=10,A=0,R=0,CE=0,CI=0)
+tend <- 100
+times <- seq(0, tend, by = 1) # daily output for 150 days
+
+ode(y=y0,times=times,func=ode_sepair,parms=params,Rt_varying=FALSE) %>% 
+  as.data.frame() -> out 
+
+daily_infection <- c(0, diff(out$CE))
+
+set.seed(23)
+library(pomp)
+
+sepiar_step_fixedbeta <- Csnippet("
+  double N = S + E + P + I + A + R;
+  double lambda = beta * (I + ba*A + bp*P) / N;
+  double infection = rbinom(S, 1-exp(-lambda*dt));
+  double E_to_P = rbinom(E, 1-exp(-epsilon*dt));
+  double rate = 1/(1/delta - 1/epsilon);
+  double rate_from_P[2], trans_from_P[2];
+  rate_from_P[0] = rate*(1-fa);
+  rate_from_P[1] = rate*fa;
+
+  reulermultinom(2, P, &rate_from_P[0], dt, &trans_from_P[0]);
+  double recovery1 = rbinom(I, 1-exp(-gamma*dt));
+  double recovery2 = rbinom(A, 1-exp(-gamma*dt));
+  
+  // Rprintf(\"trans_from_P[0] = %lg \\n\", trans_from_P[0]);
+  // Rprintf(\"trans_from_P[1] = %lg \\n\", trans_from_P[1]);
+  
+  S += -infection;
+  E += infection - E_to_P;
+  P += E_to_P - trans_from_P[0] - trans_from_P[1];
+  I += trans_from_P[0] - recovery1;
+  A += trans_from_P[1]- recovery2;
+  R += recovery1 + recovery2;
+  Y += infection;
+")
+
+rmeas <- Csnippet("
+  Z = Y;
+")
+
+dmeas <- Csnippet("
+  lik = dpois(Z, Y+0.0001, give_log);
+")
+
+rinit <- Csnippet("
+  S = 1e7;
+  E = 0;
+  P = 0;
+  I = 10;  
+  A = 0;
+  R = 0;
+  Y = 0;
+")
+
+d <- data.frame(time = out$time, Z = round(daily_infection))
+
+sepiar_fixed <- pomp(data = d,
+     times = "time",
+     t0 = 0,
+     rinit = rinit,
+     rmeasure = rmeas,
+     dmeasure = dmeas,
+     rprocess = euler(sepiar_step_fixedbeta, delta.t = 0.2),
+     statenames = c("S","E","P","I","A","R","Y"),
+     paramnames = c("beta","gamma","ba","bp","fa","epsilon","delta"),
+     accumvars = "Y",
+     params=c(gamma=0.4,ba=1,bp=1,
+                             fa=0.3,epsilon=0.4,delta=0.2))
+```
+
+## Simulate
+```{r}
+sepiar_fixed %>% simulate(params=c(beta=0.24,gamma=0.4,ba=1,bp=1,
+                             fa=0.3,epsilon=0.4,delta=0.2))%>% plot()
+
+
+sepiar_fixed_sim <- sepiar_fixed %>% 
+  simulate(nsim=1e2, params=c(beta=0.24,gamma=0.4,ba=1,bp=1,
+                             fa=0.3,epsilon=0.4,delta=0.2)) 
+## compare fits with the data
+plot(sepiar_fixed_sim[[1]]@states["Y",], type="l")
+for(i in 2:100) lines(sepiar_fixed_sim[[i]]@states["Y",])
+lines(sepiar_fixed@data["Z",], col=2, lwd=2)
+```
+
+##Fit
+```{r}
+# Local search
+set.seed(234)
+sepiar_fixed %>%
+  mif2(
+    params=c(beta=0.4,gamma=0.4,ba=1,bp=1,fa=0.3,
+             epsilon=0.4,delta=0.2),
+    Np=10000,
+    Nmif=500,
+    partrans=parameter_trans(logit=c("beta")),
+    paramnames=c("beta"),
+    rw.sd=rw.sd(beta=0.05),
+    cooling.fraction.50=0.5) -> mf1
+
+coef(mf1)
+plot(mf1)
+
+sepiar_fixed_sim <- sepiar_fixed %>% 
+  simulate(nsim = 1e3, 
+           params = c(beta=coef(mf1)[[1]],gamma=coef(mf1)[[2]],
+                      ba=1,bp=1,fa=0.3,epsilon=0.4,delta=0.2)) 
+
+## compare fits with the data
+
+plot(sepiar_fixed_sim[[1]]@states["Y",], type="l")
+for(i in 2:100)  lines(sepiar_fixed_sim[[i]]@states["Y",])
+points(sepiar_fixed@data["Z",], col=2, lwd=2)
+y_mean <- data.frame(matrix(NA, nrow=101, ncol=100))
+for(i in 1:100) {
+  y_mean[,i] <- sepiar_fixed_sim[[i]]@states["Y",]
+}
+yhat <- rowMeans(y_mean)
+yhat2 <- apply(y_mean, 1, median)
+lines(yhat, col=3, lwd=2)
+lines(yhat2, col=4, lwd=2)
+```
 
 
 
